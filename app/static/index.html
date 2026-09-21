@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Offline Dossier & Entity Extraction Pipeline</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/marked.min.js"></script>
+</head>
+<body>
+
+  <!-- Top Navigation Bar -->
+  <header class="navbar">
+    <div class="brand">
+      <div class="brand-icon">⚡</div>
+      <div>
+        <span class="brand-title" data-i18n="brand_title">Автономное Досье & Связи</span>
+        <div style="font-size: 0.7rem; color: var(--text-dim);">Qwen3.8-27B-Uncensored 262k • Air-Gapped Engine</div>
+      </div>
+    </div>
+
+    <div class="nav-actions">
+      <div class="status-badge">
+        <span id="status-dot" class="status-dot"></span>
+        <span id="status-text" data-i18n="system_status">Локальная LLM</span>
+      </div>
+
+      <!-- Language Switcher -->
+      <select id="lang-select" class="lang-select">
+        <option value="ru" selected>🇷🇺 Русский</option>
+        <option value="kz">🇰🇿 Қазақша</option>
+        <option value="en">🇬🇧 English</option>
+      </select>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="main-content">
+    
+    <!-- Hero Section -->
+    <section class="hero">
+      <h1 data-i18n="hero_title">Извлечение досье и родственных связей</h1>
+      <p data-i18n="hero_sub">100% офлайн анализ документов произвольных форматов (PDF, DOCX, XLSX, HTML, JSON, TXT, сканы) с генерацией отчетов</p>
+    </section>
+
+    <!-- Upload Glass Panel -->
+    <section class="glass-panel" style="padding: 32px; margin-bottom: 24px;">
+      <div id="dropzone" class="dropzone">
+        <div class="dropzone-icon">📁</div>
+        <div class="dropzone-title" data-i18n="drop_title">Перетащите файлы сюда или выберите на диске</div>
+        <div class="dropzone-sub" data-i18n="drop_sub">Поддерживаются PDF (цифровые и сканы), Word, Excel, HTML, JSON, TXT, JPG, PNG</div>
+        <button type="button" id="btn-browse" class="btn btn-secondary" data-i18n="btn_browse">Выбрать файлы</button>
+        <input type="file" id="file-input" class="file-input" multiple accept=".pdf,.docx,.xlsx,.html,.htm,.json,.txt,.csv,.jpg,.jpeg,.png,.tiff,.bmp,.webp">
+      </div>
+
+      <div style="margin-top: 16px;">
+        <div style="font-weight: 600; margin-bottom: 8px;" data-i18n="or_paste_text">Или вставьте скопированный текст / HTML:</div>
+        <textarea id="raw-text-input" placeholder="Вставьте текст или HTML код сюда..." style="width: 100%; height: 120px; padding: 12px; border-radius: 8px; border: 1px dashed rgba(255,255,255,0.3); background: rgba(0,0,0,0.1); color: var(--text-main); font-family: monospace; resize: vertical;"></textarea>
+      </div>
+
+      <div id="selected-files" class="selected-files"></div>
+
+      <div style="text-align: center; margin-top: 24px;">
+        <button type="button" id="btn-start" class="btn btn-primary" style="display: none; padding: 12px 32px; font-size: 1rem;" data-i18n="btn_start">
+          ⚡ Начать извлечение досье
+        </button>
+      </div>
+    </section>
+
+    <!-- Processing Pipeline Progress Tracker -->
+    <section id="pipeline-progress" class="glass-panel pipeline-progress">
+      <div style="font-weight: 600; font-size: 0.95rem; margin-bottom: 8px;">Ход обработки данных:</div>
+      <div class="steps-list">
+        <div id="step-1" class="step-item"><span class="step-num">①</span> <span data-i18n="step_parse">1. Парсинг файлов</span></div>
+        <div id="step-2" class="step-item"><span class="step-num">②</span> <span data-i18n="step_clean">2. Очистка и дедупликация</span></div>
+        <div id="step-3" class="step-item"><span class="step-num">③</span> <span data-i18n="step_llm">3. Анализ Qwen LLM</span></div>
+        <div id="step-4" class="step-item"><span class="step-num">④</span> <span data-i18n="step_export">4. Сборка отчетов</span></div>
+      </div>
+      <div id="log-console" style="margin-top: 16px; background: rgba(0,0,0,0.5); padding: 12px; border-radius: 8px; font-family: monospace; font-size: 0.85rem; color: #a3e635; height: 120px; overflow-y: auto; display: none;"></div>
+    </section>
+
+    <!-- Results Section -->
+    <section id="results-section" class="results-section">
+      
+      <!-- Results Action Header -->
+      <div class="results-header">
+        <h2 data-i18n="results_title" style="font-size: 1.3rem; font-weight: 700;">Результаты анализа</h2>
+        <div class="export-group">
+          <button id="btn-dl-pdf" class="btn btn-secondary btn-export" style="border-color: rgba(239, 68, 68, 0.4);">
+            📄 <span data-i18n="btn_dl_pdf">Скачать PDF</span>
+          </button>
+          <button id="btn-dl-docx" class="btn btn-secondary btn-export" style="border-color: rgba(59, 130, 246, 0.4);">
+            📝 <span data-i18n="btn_dl_docx">Скачать Word</span>
+          </button>
+          <button id="btn-dl-xlsx" class="btn btn-secondary btn-export" style="border-color: rgba(16, 185, 129, 0.4);">
+            📊 <span data-i18n="btn_dl_xlsx">Скачать Excel</span>
+          </button>
+          <button id="btn-dl-json" class="btn btn-secondary btn-export">
+            📦 <span data-i18n="btn_dl_json">Скачать JSON</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Subject Card Banner -->
+      <div class="glass-panel subject-banner">
+        <div class="subject-avatar">👤</div>
+        <div class="subject-info">
+          <h2 id="subject-name">—</h2>
+          <div class="subject-tags">
+            <span id="subject-iin" class="tag-badge">ИИН: —</span>
+            <span id="subject-birth" class="tag-badge">Дата рожд.: —</span>
+            <span id="subject-citizenship" class="tag-badge">Гражданство: —</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Executive Summary Box -->
+      <div class="glass-panel summary-box">
+        <div style="font-weight: 700; color: var(--accent-blue); margin-bottom: 6px;" data-i18n="summary_title">
+          Сводные выводы аналитика:
+        </div>
+        <div id="summary-text" style="color: var(--text-main); font-style: italic;"></div>
+      </div>
+
+      <!-- Interactive Tabs -->
+      <div class="glass-panel" style="padding: 24px;">
+        <nav class="tabs-nav">
+          <button class="tab-btn active" data-target="tab-markdown" data-i18n="tab_markdown">Аналитический Отчет</button>
+          <button class="tab-btn" data-target="tab-relatives" data-i18n="tab_relatives">Родственные связи</button>
+          <button class="tab-btn" data-target="tab-employment" data-i18n="tab_employment">Места работы</button>
+          <button class="tab-btn" data-target="tab-contacts" data-i18n="tab_contacts">Контакты и адреса</button>
+          <button class="tab-btn" data-target="tab-raw" data-i18n="tab_raw">Очищенный текст</button>
+          <button class="tab-btn" data-target="tab-json" data-i18n="tab_json">JSON структура</button>
+        </nav>
+
+        <!-- Tab 0: Markdown Report -->
+        <div id="tab-markdown" class="tab-pane active">
+          <div id="markdown-preview" style="padding: 24px; background: white; border-radius: 8px; color: black; line-height: 1.6; font-size: 14px;"></div>
+        </div>
+
+        <!-- Tab 1: Relatives -->
+        <div id="tab-relatives" class="tab-pane">
+          <table class="octopus-table">
+            <thead>
+              <tr>
+                <th data-i18n="col_fio">ФИО лица</th>
+                <th data-i18n="col_relation">Степень связи</th>
+                <th data-i18n="col_iin">ИИН</th>
+                <th data-i18n="col_shared">Общие признаки (совпадения)</th>
+                <th data-i18n="col_notes">Примечания</th>
+              </tr>
+            </thead>
+            <tbody id="relatives-tbody"></tbody>
+          </table>
+        </div>
+
+        <!-- Tab 2: Employment -->
+        <div id="tab-employment" class="tab-pane">
+          <table class="octopus-table">
+            <thead>
+              <tr>
+                <th data-i18n="col_company">Организация</th>
+                <th data-i18n="col_bin">БИН/ИНН</th>
+                <th data-i18n="col_position">Должность</th>
+                <th data-i18n="col_period">Период</th>
+              </tr>
+            </thead>
+            <tbody id="employment-tbody"></tbody>
+          </table>
+        </div>
+
+        <!-- Tab 3: Contacts -->
+        <div id="tab-contacts" class="tab-pane">
+          <div id="contacts-content"></div>
+        </div>
+
+        <!-- Tab 4: Raw Cleaned Text -->
+        <div id="tab-raw" class="tab-pane">
+          <pre id="raw-text-preview" class="code-preview"></pre>
+        </div>
+
+        <!-- Tab 5: JSON -->
+        <div id="tab-json" class="tab-pane">
+          <pre id="json-preview" class="code-preview"></pre>
+        </div>
+      </div>
+
+    </section>
+
+  </main>
+
+  <!-- Toast Notification Container -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

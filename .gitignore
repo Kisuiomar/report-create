@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+
+# Environment
+.env
+
+# Pytest
+.pytest_cache/
+
+# Data and Outputs
+data/outputs/
+data/temp/
+data/test_output/
+data/uploads/
+test_output.docx
+scratch_tables.txt
+
+# OS Files
+.DS_Store
+Thumbs.db
