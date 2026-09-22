@@ -142,6 +142,17 @@ class SubjectProfile(BaseModel):
     )
 
 
+class CustomSection(BaseModel):
+    """Свободный текстовый раздел для аналитики (суды, нарушения, риски)."""
+    title: str = Field(
+        ...,
+        description="Заголовок аналитического раздела (например, 'Судебная история', 'Аномалии и зоны риска', 'Рекомендации')"
+    )
+    content: str = Field(
+        ...,
+        description="Подробное текстовое содержание раздела со всеми фактами и выводами"
+    )
+
 class DossierReport(BaseModel):
     """Итоговое структурированное аналитическое досье."""
     subject: SubjectProfile = Field(
@@ -163,6 +174,10 @@ class DossierReport(BaseModel):
     relatives_and_affiliates: List[RelativeRelation] = Field(
         default_factory=list,
         description="Родственники, члены семьи и аффилированные лица"
+    )
+    analytical_sections: List[CustomSection] = Field(
+        default_factory=list,
+        description="Дополнительные аналитические блоки: судебная история, нарушения, цифровой след, аномалии, рекомендации и выводы"
     )
     executive_summary: str = Field(
         default="Аналитическое резюме формируется на основе предоставленных документов.",

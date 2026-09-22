@@ -131,6 +131,15 @@ async def process_documents(files: List[UploadFile] = File(...)):
             # Close file handles
             for f in files:
                 await f.close()
+            
+            # Clean up uploaded files (cache)
+            for path in saved_paths:
+                try:
+                    if path.exists():
+                        path.unlink()
+                        logger.info("Deleted cached file: %s", path.name)
+                except Exception as cleanup_err:
+                    logger.error("Failed to delete cached file %s: %s", path.name, cleanup_err)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

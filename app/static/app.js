@@ -256,6 +256,25 @@ document.addEventListener('DOMContentLoaded', () => {
     // Show spinner on button
     btnStart.innerHTML = `<span class="processing-spinner"><span class="spinner-ring"></span>Обработка...</span>`;
 
+    // Timer logic
+    let timerInterval = null;
+    let startTime = Date.now();
+
+    const timerDisplay = document.getElementById('timer-display');
+    const timeElapsedEl = document.getElementById('time-elapsed');
+
+    if (timerDisplay) {
+      timerDisplay.style.display = 'flex';
+      timeElapsedEl.textContent = '00:00';
+      
+      timerInterval = setInterval(() => {
+        const elapsedSec = Math.floor((Date.now() - startTime) / 1000);
+        const m = Math.floor(elapsedSec / 60).toString().padStart(2, '0');
+        const s = (elapsedSec % 60).toString().padStart(2, '0');
+        timeElapsedEl.textContent = `${m}:${s}`;
+      }, 1000);
+    }
+
     // Animate steps
     const step1 = document.getElementById('step-1');
     const step2 = document.getElementById('step-2');
@@ -310,6 +329,7 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
               const data = JSON.parse(dataStr);
               if (data.type === 'status') {
+                 if (data.progress) currentProgress = parseFloat(data.progress);
                  const prog = data.progress ? ` <span style="color:var(--accent-blue);">[${data.progress}%]</span>` : '';
                  logConsole.innerHTML += `<div>> ${data.message}${prog}</div>`;
                  logConsole.scrollTop = logConsole.scrollHeight;
@@ -354,6 +374,8 @@ document.addEventListener('DOMContentLoaded', () => {
           throw new Error("Не удалось получить результат. Возможно, сервер вернул пустой ответ.");
       }
 
+      if (timerInterval) clearInterval(timerInterval);
+
       step4.className = 'step-item done';
 
       setTimeout(() => {
@@ -366,21 +388,14 @@ document.addEventListener('DOMContentLoaded', () => {
       }, 500);
 
     } catch (err) {
+      if (timerInterval) clearInterval(timerInterval);
       showToast(`Ошибка обработки: ${err.message}`, 'error', 8000);
       btnStart.disabled = false;
       btnStart.innerHTML = `⚡ ${I18N[currentLang].btn_start}`;
     }
   });
 
-  // Tab navigation
-  document.querySelectorAll('.tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-      btn.classList.add('active');
-      document.getElementById(btn.getAttribute('data-target')).classList.add('active');
-    });
-  });
+
 
   checkLLMStatus();
   setInterval(checkLLMStatus, 15000);
@@ -394,80 +409,9 @@ function renderResults(data) {
   document.getElementById('subject-iin').textContent = `ИИН: ${d.subject.iin || '—'}`;
   document.getElementById('subject-birth').textContent = `Дата рожд.: ${d.subject.birth_date || '—'}`;
   document.getElementById('subject-citizenship').textContent = `Гражданство: ${d.subject.citizenship || '—'}`;
-  document.getElementById('summary-text').textContent = d.executive_summary || '';
 
-  // Render Markdown Report
-  if (data.markdown_report && typeof marked !== 'undefined') {
-    document.getElementById('markdown-preview').innerHTML = marked.parse(data.markdown_report);
-  } else {
-    document.getElementById('markdown-preview').innerHTML = "<p style='color:red;'>Markdown report not generated or marked.js missing.</p>";
-  }
 
-  // Relatives table
-  const relTbody = document.getElementById('relatives-tbody');
-  relTbody.innerHTML = '';
-  if (d.relatives_and_affiliates && d.relatives_and_affiliates.length > 0) {
-    d.relatives_and_affiliates.forEach(r => {
-      const tr = document.createElement('tr');
-      const sharedHtml = r.shared_attributes && r.shared_attributes.length > 0
-        ? r.shared_attributes.map(s => `<span class="badge-shared">🔗 ${s}</span>`).join(' ')
-        : '—';
 
-      tr.innerHTML = `
-        <td><b>${r.full_name}</b></td>
-        <td>${r.relation_type}</td>
-        <td><code>${r.iin || '—'}</code></td>
-        <td>${sharedHtml}</td>
-        <td style="color:var(--text-muted);">${r.notes || '—'}</td>
-      `;
-      relTbody.appendChild(tr);
-    });
-  } else {
-    relTbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--text-dim);">${I18N[currentLang].empty_relatives}</td></tr>`;
-  }
-
-  // Employment table
-  const empTbody = document.getElementById('employment-tbody');
-  empTbody.innerHTML = '';
-  if (d.employment_history && d.employment_history.length > 0) {
-    d.employment_history.forEach(e => {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td><b>${e.organization}</b></td>
-        <td><code>${e.bin || '—'}</code></td>
-        <td>${e.position || '—'}</td>
-        <td>${e.period || '—'}</td>
-      `;
-      empTbody.appendChild(tr);
-    });
-  } else {
-    empTbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--text-dim);">${I18N[currentLang].empty_employment}</td></tr>`;
-  }
-
-  // Contacts
-  const phones = (d.contacts.phone_numbers || []).join(', ') || 'Не выявлены';
-  const emails = (d.contacts.emails || []).join(', ') || 'Не выявлены';
-  const socials = (d.contacts.social_profiles || []).join(', ') || 'Не выявлены';
-  const addrs = (d.addresses || []).map(a => `<li><b>[${a.address_type}]</b> ${a.full_address}</li>`).join('') || '<li>Не выявлены</li>';
-
-  document.getElementById('contacts-content').innerHTML = `
-    <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 20px;">
-      <div class="glass-panel" style="padding:16px;">
-        <h3 style="margin-bottom:12px;color:var(--accent-blue);">📞 Средства связи</h3>
-        <p><b>Телефоны:</b> ${phones}</p>
-        <p style="margin-top:6px;"><b>Email:</b> ${emails}</p>
-        <p style="margin-top:6px;"><b>Соцсети:</b> ${socials}</p>
-      </div>
-      <div class="glass-panel" style="padding:16px;">
-        <h3 style="margin-bottom:12px;color:var(--accent-blue);">📍 Выявленные адреса</h3>
-        <ul style="padding-left:18px;line-height:1.8;">${addrs}</ul>
-      </div>
-    </div>
-  `;
-
-  // Raw & JSON
-  document.getElementById('raw-text-preview').textContent = data.raw_cleaned_text || '';
-  document.getElementById('json-preview').textContent = JSON.stringify(data.dossier, null, 2);
 
   // Setup download buttons
   setupDownloadBtn('btn-dl-pdf', data.generated_files.pdf);

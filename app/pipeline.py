@@ -143,27 +143,17 @@ class DossierPipeline:
             "estimated_input_tokens": estimated_tokens,
         })
 
-        yield {"type": "status", "message": "Генерация форензик-отчета по структурированным данным (в фоне)...", "progress": 85}
+        # 3.5 Генерация детального Markdown отчета через LLM
+        logger.info("Generating detailed Markdown Report via LLM...")
+        dossier_json = dossier.model_dump_json(indent=2)
+        markdown_report = ""
+        
+        async for chunk in self.llm_client.generate_markdown_report(dossier_json, cleaned_text):
+            if chunk["type"] == "status":
+                yield chunk
+            elif chunk["type"] == "result":
+                markdown_report = chunk["data"]
 
-        # 3.5 Генерация глубокого аналитического отчета (Markdown, 14 разделов)
-        logger.info("Generating comprehensive 14-section Forensic Markdown Report...")
-        try:
-            # Передаем сжатый JSON в Markdown генератор, а не сырой текст!
-            dossier_json = dossier.model_dump_json(exclude_none=True)
-            markdown_report = ""
-            
-            async for event in self.llm_client.generate_markdown_report(dossier_json):
-                if event["type"] == "status":
-                    yield event
-                elif event["type"] == "result":
-                    markdown_report = event["data"]
-                    
-            logger.info("Markdown report generated successfully (%d chars).", len(markdown_report))
-        except Exception as exc:
-            logger.error("Failed to generate Markdown report: %s", exc, exc_info=True)
-            markdown_report = f"# Ошибка генерации отчета\n\nLLM не смогла сформировать текст: {exc}"
-
-        yield {"type": "status", "message": "Сборка файлов отчета (Word, Excel, PDF)...", "progress": 95}
 
         # 4. Формирование базового имени для экспорта
         safe_subject = "".join(c for c in dossier.subject.full_name if c.isalnum() or c in (" ", "_", "-")).strip()
@@ -264,3 +254,77 @@ class DossierPipeline:
         for profile in partial.contacts.social_profiles:
             if profile not in primary.contacts.social_profiles:
                 primary.contacts.social_profiles.append(profile)
+
+    @staticmethod
+    def _generate_static_markdown(dossier: DossierReport) -> str:
+        """
+        Быстро генерирует Markdown из структурированного JSON, чтобы не тратить время на LLM генерацию.
+        """
+        md = []
+        md.append(f"# Аналитический отчет: {dossier.subject.full_name}")
+        md.append(f"ИИН/ИНН: {dossier.subject.iin or '-'}")
+        md.append("\n")
+
+        # 1. Резюме
+        md.append("## 1. Резюме (Executive Summary)")
+        md.append(f"{dossier.executive_summary}\n")
+        
+        # 2. Анкетные данные
+        md.append("## 2. Анкетные данные субъекта")
+        md.append("| Параметр | Значение |")
+        md.append("| -------- | -------- |")
+        md.append(f"| ФИО | **{dossier.subject.full_name}** |")
+        md.append(f"| ИИН/ИНН | {dossier.subject.iin or '-'} |")
+        md.append(f"| Дата рождения | {dossier.subject.birth_date or '-'} |")
+        md.append(f"| Место рождения | {dossier.subject.birth_place or '-'} |")
+        md.append(f"| Гражданство | {dossier.subject.citizenship or '-'} |")
+        md.append(f"| Пол | {dossier.subject.gender or '-'} |")
+        md.append("\n")
+        
+        # 3. Контакты
+        md.append("## 3. Контакты и адреса")
+        if dossier.contacts.phone_numbers:
+            md.append(f"**Телефоны:** {', '.join(dossier.contacts.phone_numbers)}")
+        if dossier.contacts.emails:
+            md.append(f"**Email:** {', '.join(dossier.contacts.emails)}")
+        if dossier.contacts.social_profiles:
+            md.append(f"**Соц. сети:** {', '.join(dossier.contacts.social_profiles)}")
+            
+        if dossier.addresses:
+            md.append("\n**Адреса:**")
+            md.append("| Тип | Адрес | Город | Регион |")
+            md.append("| --- | --- | --- | --- |")
+            for a in dossier.addresses:
+                md.append(f"| {a.address_type} | {a.full_address} | {a.city or '-'} | {a.region or '-'} |")
+        md.append("\n")
+
+        # 4. Трудоустройство
+        md.append("## 4. Места работы")
+        if dossier.employment_history:
+            md.append("| Организация | Должность | Период | БИН | Примечания |")
+            md.append("| --- | --- | --- | --- | --- |")
+            for e in dossier.employment_history:
+                md.append(f"| **{e.organization}** | {e.position or '-'} | {e.period or '-'} | {e.bin or '-'} | {e.notes or '-'} |")
+        else:
+            md.append("Нет данных о трудоустройстве.")
+        md.append("\n")
+
+        # 5. Родственники
+        md.append("## 5. Родственные и аффилированные связи")
+        if dossier.relatives_and_affiliates:
+            md.append("| ФИО | Тип связи | ИИН | Дата рождения | Общие признаки | Примечания |")
+            md.append("| --- | --- | --- | --- | --- | --- |")
+            for r in dossier.relatives_and_affiliates:
+                shared = ', '.join(r.shared_attributes) if r.shared_attributes else '-'
+                md.append(f"| **{r.full_name}** | {r.relation_type} | {r.iin or '-'} | {r.birth_date or '-'} | {shared} | {r.notes or '-'} |")
+        else:
+            md.append("Нет данных о связях.")
+            
+        # 6. Дополнительные аналитические разделы
+        if hasattr(dossier, 'analytical_sections') and dossier.analytical_sections:
+            for i, section in enumerate(dossier.analytical_sections, start=6):
+                md.append(f"\n## {i}. {section.title}")
+                md.append(f"{section.content}\n")
+            
+        return "\n".join(md)
+

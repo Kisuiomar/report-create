@@ -33,8 +33,8 @@ class LLMClient:
 
 ### Обязательные требования:
 1. Аналитический синтез: Не просто перечисляй факты. Ищи скрытые корреляции, совпадения дат, аномалии и противоречия.
-2. Детализация и Таблицы: Пиши максимально развернуто. Где это уместно, ОБЯЗАТЕЛЬНО используй Markdown-таблицы (| Поле | Значение |).
-3. Форматирование: Ответ формируй СТРОГО в Markdown формате. Используй заголовки (##, ###), жирный текст для акцентов и Markdown-таблицы. Не пиши вступительных слов, сразу начинай с заголовка раздела."""
+2. Детализация и Таблицы: Пиши максимально развернуто, НО БЕЗ ПОВТОРЕНИЙ И ВОДЫ. Где это уместно, используй Markdown-таблицы (| Поле | Значение |). СТРОГО ЗАПРЕЩАЕТСЯ дублировать одни и те же таблицы или списки.
+3. Форматирование: Ответ формируй СТРОГО в Markdown формате. Не пиши вступительных слов, сразу начинай с заголовка раздела. Как только суть раздела раскрыта — завершай ответ, не генерируй бесконечные списки."""
 
     FORENSIC_SECTIONS = [
         {
@@ -149,34 +149,47 @@ class LLMClient:
             logger.warning("Pydantic validation issue, attempting partial recovery: %s", validation_err)
             return self._salvage_dossier(parsed_data, str(validation_err))
 
-    async def generate_markdown_report(self, dossier_json: str) -> AsyncGenerator[Dict[str, Any], None]:
+    async def generate_markdown_report(self, dossier_json: str, raw_text: str) -> AsyncGenerator[Dict[str, Any], None]:
         """
-        Отправляет JSON в локальную LLM и генерирует полный Markdown текст за один вызов.
+        Отправляет JSON и оригинальный текст в локальную LLM.
+        Генерирует подробный Markdown текст поблочно для сохранения всех деталей (медленно, но качественно).
         """
-        logger.info("Starting single-pass Markdown generation...")
+        logger.info("Starting section-by-section multi-pass Markdown generation...")
+        yield {"type": "status", "message": "Включен режим максимальной детализации. Генерация отчета по частям...", "progress": 50}
         
-        yield {"type": "status", "message": "Генерация полного форензик-отчета (может занять 1-3 минуты)..."}
+        full_report_blocks = []
+        total_sections = len(self.FORENSIC_SECTIONS)
         
-        combined_instructions = "Сгенерируй полный структурированный форензик-отчет на основе предоставленного JSON-досье.\nОтчет должен содержать следующие 14 разделов по порядку:\n\n"
         for idx, section in enumerate(self.FORENSIC_SECTIONS, 1):
-            combined_instructions += f"### {idx}. {section['title']}\n{section['instruction']}\n\n"
+            progress = 50 + int(45 * (idx / total_sections))
+            yield {"type": "status", "message": f"Генерация раздела {idx}/{total_sections}: {section['title']}...", "progress": progress}
             
-        combined_instructions += "Обязательно используй Markdown разметку, выводи названия разделов через ##. Не придумывай данные, которых нет в JSON."
-        
-        full_report = await self._call_llm_markdown_section(dossier_json, combined_instructions)
-        
-        if not full_report.strip():
-            full_report = "# Аналитический Отчёт\n\nПроизошла ошибка при генерации отчета."
+            instruction = (
+                f"Твоя задача — написать ТОЛЬКО ОДИН РАЗДЕЛ отчета: '{section['title']}'.\n"
+                f"Инструкция для раздела: {section['instruction']}\n\n"
+                f"Используй факты из оригинального текста, но пиши ЧЁТКО, БЕЗ ВОДЫ И СТРОГО БЕЗ ПОВТОРЕНИЙ. "
+                f"ЗАПРЕЩАЕТСЯ создавать дублирующиеся подраздел (например 4.1, 4.2, 4.3 с одинаковым смыслом). "
+                f"Выводи только запрошенную суть.\n"
+                f"Пиши в профессиональном аналитическом стиле. Формат: Markdown."
+            )
             
-        logger.debug("Final Markdown report length: %d chars", len(full_report))
-        yield {"type": "result", "data": full_report}
+            prompt = f"{instruction}\n\n=== БАЗОВОЕ ДОСЬЕ (JSON) ===\n{dossier_json}\n\n=== ОРИГИНАЛЬНЫЙ ТЕКСТ ДОКУМЕНТОВ ===\n{raw_text}"
+            
+            section_md = await self._call_llm_markdown_section(prompt)
+            full_report_blocks.append(section_md)
+            
+        final_markdown = "\n\n".join(full_report_blocks)
+        
+        if not final_markdown.strip():
+            final_markdown = "# Аналитический Отчёт\n\nПроизошла ошибка при генерации отчета."
+            
+        logger.debug("Final Markdown report length: %d chars", len(final_markdown))
+        yield {"type": "result", "data": final_markdown}
 
-    async def _call_llm_markdown_section(self, dossier_json: str, section_instruction: str) -> str:
+    async def _call_llm_markdown_section(self, prompt: str) -> str:
         """Вызов Ollama или vLLM для получения одного конкретного раздела Markdown."""
         max_retries = settings.LLM_MAX_RETRIES
         last_exc: Optional[Exception] = None
-
-        prompt = f"{section_instruction}\n\nИзвлеченное JSON досье субъекта:\n\n{dossier_json}"
 
         for attempt in range(1, max_retries + 1):
             try:
@@ -307,13 +320,12 @@ class LLMClient:
                 "model": self.model,
                 "messages": [
                     {"role": "system", "content": self.SYSTEM_PROMPT},
-                    {"role": "user", "content": f"Проанализируй следующий массив документов и извлеки полное досье субъекта:\n\n{document_text}"}
+                    {"role": "user", "content": f"Проанализируй текст документов и извлеки досье. ВАЖНО: твой ответ должен быть СТРОГО в формате JSON, без маркдауна и пояснений. Начни с {{ и закончи }}.\n\nСтруктура JSON:\n{json.dumps(schema)}\n\nТекст документов:\n{document_text}"}
                 ],
                 "temperature": self.temperature,
                 "max_tokens": 8192,
                 "response_format": {
-                    "type": "json_object",
-                    "schema": schema
+                    "type": "json_object"
                 }
             }
             logger.info("Sending request to vLLM (%s) at %s...", self.model, url)
