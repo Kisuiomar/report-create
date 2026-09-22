@@ -21,11 +21,11 @@ services:
     build: .
     container_name: spark-dossier-app
     restart: unless-stopped
-    ports:
-      - "8080:8080"
+    # Порт 8080 больше не торчит наружу, доступ только для Nginx
+    expose:
+      - "8080"
     environment:
       - LLM_PROVIDER=ollama
-      # Обращение к контейнеру Ollama по его имени во внутренней сети Docker
       - LLM_BASE_URL=http://ollama-server:11434
       - LLM_MODEL=orcarouter/Qwen3.8-27B-Uncensored
       - LLM_NUM_CTX=128000
@@ -34,6 +34,17 @@ services:
       - ollama-server
     volumes:
       - ./data:/app/data
+
+  nginx:
+    image: nginx:latest
+    container_name: spark-dossier-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - web-app
 
 volumes:
   ollama_data:
