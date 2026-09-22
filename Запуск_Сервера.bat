@@ -1,30 +1,28 @@
 @echo off
-chcp 65001 >nul
-title Запуск сервера Offline Dossier
+title Offline Dossier Server Launcher
 
 echo ========================================================
-echo         ЗАПУСК СИСТЕМЫ OFFLINE DOSSIER (DOCKER)
+echo         STARTING OFFLINE DOSSIER SYSTEM (DOCKER)
 echo ========================================================
 echo.
 
-echo [1/3] Подготовка и запуск контейнеров (Веб-сервер + Ollama)...
+echo [1/3] Building and starting containers (Web Server + Ollama)...
 docker-compose up --build -d
 echo.
 
-echo [2/3] Инициализация нейросети...
-echo Скачивание модели orcarouter/Qwen3.8-27B-Uncensored.
-echo Пожалуйста, подождите. Это может занять время...
+echo [2/3] Initializing Neural Network...
+echo Downloading model orcarouter/Qwen3.8-27B-Uncensored.
+echo Please wait, this might take a significant amount of time...
 docker exec spark-dossier-ollama ollama pull orcarouter/Qwen3.8-27B-Uncensored
 echo.
 
-echo [3/3] Запуск интерфейса...
-echo Сервер успешно запущен! Открываю браузер...
+echo [3/3] Launching Web Interface...
+echo Server successfully started! Opening browser...
 timeout /t 3 >nul
 start http://localhost:8080
 
 echo.
 echo ========================================================
-echo Готово! Вы можете свернуть это окно (но не закрывайте его,
-echo если хотите видеть логи, хотя система работает в фоне).
+echo DONE! You may minimize this window.
 echo ========================================================
 pause
