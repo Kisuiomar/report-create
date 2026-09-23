@@ -27,7 +27,7 @@ services:
     environment:
       - LLM_PROVIDER=ollama
       - LLM_BASE_URL=http://ollama-server:11434
-      - LLM_MODEL=qwen2.5:7b
+      - LLM_MODEL=orcarouter/Qwen3.8-27B-Uncensored
       - LLM_NUM_CTX=128000
       - LLM_REQUEST_TIMEOUT=2400
     depends_on:
