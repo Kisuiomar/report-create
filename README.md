@@ -49,3 +49,11 @@
 docker-compose down
 ```
 Все ваши проанализированные документы **сохранятся** в папке `qdrant_data`, и при следующем запуске система их "вспомнит".
+
+.env
+
+LLM_PROVIDER=ollama
+LLM_BASE_URL=http://localhost:11434
+LLM_MODEL=orcarouter/Qwen3.8-27B-Uncensored
+LLM_NUM_CTX=131072
+LLM_REQUEST_TIMEOUT=2400
