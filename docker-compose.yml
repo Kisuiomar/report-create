@@ -32,6 +32,7 @@ services:
       - LLM_REQUEST_TIMEOUT=2400
     depends_on:
       - ollama-server
+      - neo4j
     volumes:
       - ./data:/app/data
 
@@ -55,6 +56,19 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
+  neo4j:
+    image: neo4j:latest
+    container_name: spark-dossier-neo4j
+    restart: unless-stopped
+    environment:
+      - NEO4J_AUTH=neo4j/dossier_password
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+
 volumes:
   ollama_data:
   qdrant_data:
+  neo4j_data:

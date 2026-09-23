@@ -203,16 +203,36 @@ def run_extraction(
         typer.echo(f"  - {f}")
 
     try:
-        result = pipeline.process_files(files, export_formats=formats)
+        import asyncio
+        
+        async def _run():
+            res = None
+            async for event in pipeline.process_files(files, export_formats=formats):
+                if event["type"] == "status":
+                    typer.echo(f"[{event.get('progress', 0)}%] {event['message']}")
+                elif event["type"] == "result":
+                    res = event["data"]
+                elif event["type"] == "error":
+                    typer.secho(f"\nPipeline Error: {event['message']}", fg=typer.colors.RED, err=True)
+                    raise typer.Exit(code=1)
+            return res
+
+        result = asyncio.run(_run())
+        
+        if not result:
+            typer.secho("No result returned.", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=1)
+
         typer.secho("\n--- EXTRACTION COMPLETED SUCCESSFULLY ---", fg=typer.colors.GREEN, bold=True)
-        typer.echo(f"Subject: {result.dossier.subject.full_name}")
-        typer.echo(f"IIN: {result.dossier.subject.iin or 'N/A'}")
-        typer.echo(f"Relatives & Affiliates found: {len(result.dossier.relatives_and_affiliates)}")
-        typer.echo(f"Employment history records: {len(result.dossier.employment_history)}")
-        typer.echo(f"Time taken: {result.execution_time_seconds:.2f} s")
+        dossier = result["dossier"]
+        typer.echo(f"Subject: {dossier['subject']['full_name']}")
+        typer.echo(f"IIN: {dossier['subject'].get('iin') or 'N/A'}")
+        typer.echo(f"Relatives & Affiliates found: {len(dossier['relatives_and_affiliates'])}")
+        typer.echo(f"Employment history records: {len(dossier['employment_history'])}")
+        typer.echo(f"Time taken: {result['execution_time_seconds']:.2f} s")
         
         typer.secho("\nGenerated Reports:", fg=typer.colors.CYAN, bold=True)
-        for fmt, path in result.generated_files.items():
+        for fmt, path in result["generated_files"].items():
             typer.echo(f"  [{fmt.upper()}] -> {path}")
 
     except Exception as exc:

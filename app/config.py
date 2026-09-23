@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     # Model identifier (e.g. qwen2.5:14b, qwen2.5:32b, Qwen/Qwen2.5-14B-Instruct)
     LLM_MODEL: str = "qwen2.5:3b"
     
+    # Neo4j Graph DB settings
+    NEO4J_URI: str = "bolt://spark-dossier-neo4j:7687"
+    NEO4J_USER: str = "neo4j"
+    NEO4J_PASSWORD: str = "dossier_password"
+    
     # Analytical parameters
     LLM_TEMPERATURE: float = 0.1
     LLM_NUM_CTX: int = 32768  # 32k context window support for 3b model

@@ -110,7 +110,9 @@ class DossierPipeline:
         
         yield {"type": "status", "message": "Индексация всего документа в Qdrant...", "progress": 30}
         from app.core.vector_store import VectorKnowledgeBase
+        from app.core.graph_store import GraphKnowledgeBase
         vkb = VectorKnowledgeBase()
+        gkb = GraphKnowledgeBase()
         
         file_names = ", ".join([d.file_name for d in parsed_docs])
         await vkb.index_document(cleaned_text, source_name=file_names, session_id=session_id)
@@ -123,24 +125,45 @@ class DossierPipeline:
         dossier_step1 = await self.llm_client.generate_dossier(prompt_1)
         
         subject_name = dossier_step1.subject.full_name or "Неизвестный субъект"
+        subject_iin = dossier_step1.subject.iin
         
-        yield {"type": "status", "message": f"RAG Шаг 2: Поиск связей и родственников ({subject_name})...", "progress": 55}
-        q_relatives = await vkb.search(f"Родственники, мать, отец, супруг, жена, муж, дети, братья, сестры, учредители, компании связанные с {subject_name}", limit=10, session_id=session_id)
-        prompt_2 = (
-            f"Текущее базовое досье:\n{dossier_step1.model_dump_json(exclude_unset=True)}\n\n"
-            f"Внимательно изучи фрагменты ниже. Найди всех родственников и бизнес-связи для {subject_name} и добавь их в досье.\n\n"
-            f"Фрагменты:\n{q_relatives}"
-        )
-        dossier_step2 = await self.llm_client.generate_dossier(prompt_2)
+        # Получаем исторический контекст (Cross-Referencing)
+        historical_context = gkb.get_historical_context(subject_name, subject_iin)
+        if historical_context:
+            yield {"type": "status", "message": "Найдены исторические данные в графе. Применяем cross-referencing...", "progress": 45}
+            logger.info("Found historical context for %s", subject_name)
         
-        yield {"type": "status", "message": "RAG Шаг 3: Поиск адресов и места работы...", "progress": 70}
-        q_addr = await vkb.search(f"Место работы, должность, компания, увольнение, адрес проживания, прописка, недвижимость {subject_name}", limit=10, session_id=session_id)
-        prompt_3 = (
-            f"Текущее досье:\n{dossier_step2.model_dump_json(exclude_unset=True)}\n\n"
-            f"Внимательно изучи фрагменты ниже. Найди историю работы (должности) и адреса для {subject_name} и добавь их в досье.\n\n"
-            f"Фрагменты:\n{q_addr}"
-        )
-        dossier = await self.llm_client.generate_dossier(prompt_3)
+        yield {"type": "status", "message": f"RAG Шаги 2 и 3: Параллельный поиск связей, родственников, адресов и работы ({subject_name})...", "progress": 55}
+        
+        async def fetch_step2():
+            q_relatives = await vkb.search(f"Родственники, мать, отец, супруг, жена, муж, дети, братья, сестры, учредители, компании связанные с {subject_name}", limit=10, session_id=session_id)
+            prompt_2 = (
+                f"Текущее базовое досье:\n{dossier_step1.model_dump_json(exclude_unset=True)}\n\n"
+                f"{historical_context}\n\n"
+                f"Внимательно изучи фрагменты ниже. Найди всех родственников и бизнес-связи для {subject_name} и добавь их в досье.\n\n"
+                f"Фрагменты:\n{q_relatives}"
+            )
+            return await self.llm_client.generate_dossier(prompt_2)
+
+        async def fetch_step3():
+            q_addr = await vkb.search(f"Место работы, должность, компания, увольнение, адрес проживания, прописка, недвижимость {subject_name}", limit=10, session_id=session_id)
+            prompt_3 = (
+                f"Текущее досье:\n{dossier_step1.model_dump_json(exclude_unset=True)}\n\n"
+                f"{historical_context}\n\n"
+                f"Внимательно изучи фрагменты ниже. Найди историю работы (должности) и адреса для {subject_name} и добавь их в досье.\n\n"
+                f"Фрагменты:\n{q_addr}"
+            )
+            return await self.llm_client.generate_dossier(prompt_3)
+            
+        dossier_step2, dossier_step3 = await asyncio.gather(fetch_step2(), fetch_step3())
+        
+        dossier = dossier_step1
+        self._merge_partial_dossier(dossier, dossier_step2)
+        self._merge_partial_dossier(dossier, dossier_step3)
+        
+        yield {"type": "status", "message": "Сохранение обновленного профиля в граф Neo4j...", "progress": 75}
+        gkb.merge_dossier(dossier)
+        gkb.close()
 
         # Добавим метаданные конвейера
         dossier.metadata.update({
