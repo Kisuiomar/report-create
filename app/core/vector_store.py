@@ -62,8 +62,8 @@ class VectorKnowledgeBase:
             chunks.append(current_chunk.strip())
         return chunks
 
-    async def index_document(self, text: str, source_name: str):
-        logger.info(f"Indexing document '{source_name}' into Qdrant...")
+    async def index_document(self, text: str, source_name: str, session_id: str = None):
+        logger.info(f"Indexing document '{source_name}' into Qdrant (session: {session_id})...")
         chunks = self._chunk_text(text)
         if not chunks:
             return
@@ -76,7 +76,7 @@ class VectorKnowledgeBase:
                     models.PointStruct(
                         id=str(uuid.uuid4()),
                         vector=emb,
-                        payload={"text": chunk, "source": source_name, "chunk_idx": i}
+                        payload={"text": chunk, "source": source_name, "chunk_idx": i, "session_id": session_id}
                     )
                 )
             
@@ -88,13 +88,21 @@ class VectorKnowledgeBase:
         except Exception as e:
             logger.error(f"Failed to index document to Qdrant: {e}")
 
-    async def search(self, query: str, limit: int = 5) -> str:
-        logger.info(f"Searching Qdrant for: '{query}'")
+    async def search(self, query: str, limit: int = 5, session_id: str = None) -> str:
+        logger.info(f"Searching Qdrant for: '{query}' (session: {session_id})")
         try:
             query_embedding = (await self._get_embeddings([query]))[0]
+            
+            filter_params = None
+            if session_id:
+                filter_params = models.Filter(
+                    must=[models.FieldCondition(key="session_id", match=models.MatchValue(value=session_id))]
+                )
+
             search_result = self.client.search(
                 collection_name=self.collection_name,
                 query_vector=query_embedding,
+                query_filter=filter_params,
                 limit=limit
             )
             

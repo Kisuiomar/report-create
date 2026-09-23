@@ -104,67 +104,43 @@ class DossierPipeline:
             100.0 * (1.0 - len(cleaned_text) / max(len(combined_text), 1))
         )
 
-        # 3. Передача в локальную LLM (с авто-чанкингом при превышении контекстного окна)
-        context_limit = int(settings.LLM_NUM_CTX * 0.85)  # 85% of context window
-        logger.info("Invoking local LLM (%s via %s)...", self.llm_client.model, self.llm_client.provider)
-
-        yield {"type": "status", "message": "Структурирование досье через Qwen LLM...", "progress": 40}
-
-        if estimated_tokens > context_limit:
-            logger.warning(
-                "Document exceeds context window (%d tokens > %d limit). Splitting into chunks...",
-                estimated_tokens, context_limit
-            )
-            chunks = TextCleaner.split_into_chunks(cleaned_text, max_chunk_tokens=context_limit)
-            logger.info("Split into %d chunks for sequential processing.", len(chunks))
-
-            prog1 = 40 + int(45 / len(chunks))
-            yield {"type": "status", "message": f"Документ большой. Обработка чанка 1 из {len(chunks)}...", "progress": prog1}
-            # Process first chunk as primary dossier
-            dossier = await self.llm_client.generate_dossier(chunks[0])
-
-            # Merge additional chunks' results into the primary dossier
-            for chunk_idx, chunk in enumerate(chunks[1:], 2):
-                prog_chunk = 40 + int(45 * chunk_idx / len(chunks))
-                yield {"type": "status", "message": f"Обработка чанка {chunk_idx} из {len(chunks)}...", "progress": prog_chunk}
-                logger.info("Processing chunk %d/%d...", chunk_idx, len(chunks))
-                try:
-                    partial = await self.llm_client.generate_dossier(chunk)
-                    self._merge_partial_dossier(dossier, partial)
-                except Exception as chunk_err:
-                    logger.warning("Chunk %d processing failed, skipping: %s", chunk_idx, chunk_err)
-        else:
-            dossier = await self.llm_client.generate_dossier(cleaned_text)
-
-        # RAG ENRICHMENT (Обогащение досье из истории)
-        yield {"type": "status", "message": "Индексация и поиск связей в глобальном архиве Qdrant...", "progress": 45}
-        try:
-            from app.core.vector_store import VectorKnowledgeBase
-            vkb = VectorKnowledgeBase()
-            
-            # 1. Сохраняем текущий документ в базу знаний навсегда
-            file_names = ", ".join([d.file_name for d in parsed_docs])
-            await vkb.index_document(cleaned_text, source_name=file_names)
-            
-            # 2. Ищем исторические упоминания по субъекту
-            subject_name = dossier.subject.full_name or ""
-            subject_iin = dossier.subject.iin or ""
-            query = f"{subject_name} {subject_iin}".strip()
-            
-            if query and "Неизвестный субъект" not in query:
-                historical_context = await vkb.search(query, limit=6)
-                
-                if historical_context:
-                    yield {"type": "status", "message": f"Найдены исторические данные по '{subject_name}' в архиве. Обогащаем досье...", "progress": 48}
-                    enrich_prompt = (
-                        f"Вот текущее досье, извлеченное из нового документа:\n{dossier.model_dump_json(exclude_unset=True)}\n\n"
-                        f"А вот данные об этом человеке из ПРОШЛЫХ архивных документов (Глобальная база знаний):\n{historical_context}\n\n"
-                        f"Пожалуйста, обнови досье. Если в архиве есть новые родственники, новые адреса, места работы или телефоны — ДОБАВЬ их к существующим. "
-                        f"Верни обновленный валидный JSON."
-                    )
-                    dossier = await self.llm_client.generate_dossier(enrich_prompt)
-        except Exception as e:
-            logger.error("RAG Enrichment failed: %s", e)
+        # 3. Индексация в Qdrant (Full RAG Pipeline - Опция Б)
+        import uuid
+        session_id = str(uuid.uuid4())
+        
+        yield {"type": "status", "message": "Индексация всего документа в Qdrant...", "progress": 30}
+        from app.core.vector_store import VectorKnowledgeBase
+        vkb = VectorKnowledgeBase()
+        
+        file_names = ", ".join([d.file_name for d in parsed_docs])
+        await vkb.index_document(cleaned_text, source_name=file_names, session_id=session_id)
+        
+        # 4. Пошаговый RAG конвейер
+        yield {"type": "status", "message": "RAG Шаг 1: Идентификация главного субъекта...", "progress": 40}
+        
+        q_subject = await vkb.search("Главный субъект документа, ФИО, ИИН, ИНН, дата рождения, паспорт, кто этот человек?", limit=5, session_id=session_id)
+        prompt_1 = f"Извлеки базовые данные о главном лице документа из этих фрагментов. Игнорируй остальных людей пока.\n\nФрагменты:\n{q_subject}"
+        dossier_step1 = await self.llm_client.generate_dossier(prompt_1)
+        
+        subject_name = dossier_step1.subject.full_name or "Неизвестный субъект"
+        
+        yield {"type": "status", "message": f"RAG Шаг 2: Поиск связей и родственников ({subject_name})...", "progress": 55}
+        q_relatives = await vkb.search(f"Родственники, мать, отец, супруг, жена, муж, дети, братья, сестры, учредители, компании связанные с {subject_name}", limit=10, session_id=session_id)
+        prompt_2 = (
+            f"Текущее базовое досье:\n{dossier_step1.model_dump_json(exclude_unset=True)}\n\n"
+            f"Внимательно изучи фрагменты ниже. Найди всех родственников и бизнес-связи для {subject_name} и добавь их в досье.\n\n"
+            f"Фрагменты:\n{q_relatives}"
+        )
+        dossier_step2 = await self.llm_client.generate_dossier(prompt_2)
+        
+        yield {"type": "status", "message": "RAG Шаг 3: Поиск адресов и места работы...", "progress": 70}
+        q_addr = await vkb.search(f"Место работы, должность, компания, увольнение, адрес проживания, прописка, недвижимость {subject_name}", limit=10, session_id=session_id)
+        prompt_3 = (
+            f"Текущее досье:\n{dossier_step2.model_dump_json(exclude_unset=True)}\n\n"
+            f"Внимательно изучи фрагменты ниже. Найди историю работы (должности) и адреса для {subject_name} и добавь их в досье.\n\n"
+            f"Фрагменты:\n{q_addr}"
+        )
+        dossier = await self.llm_client.generate_dossier(prompt_3)
 
         # Добавим метаданные конвейера
         dossier.metadata.update({
