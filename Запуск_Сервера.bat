@@ -19,7 +19,8 @@ echo.
 echo [3/3] Launching Web Interface...
 echo Server successfully started! Opening browser...
 timeout /t 3 >nul
-start http://localhost:8080
+start http://localhost
+
 
 echo.
 echo ========================================================

@@ -11,5 +11,6 @@ docker exec spark-dossier-ollama ollama pull orcarouter/Qwen3.8-27B-Uncensored
 
 echo ""
 echo "=== ВСЁ УСПЕШНО ЗАПУЩЕНО! ==="
-echo "Ваш сервер доступен по адресу: http://<ip-вашего-сервера>:8080"
+echo "Ваш сервер доступен по адресу: http://<ip-вашего-сервера> (через Nginx)"
+
 
