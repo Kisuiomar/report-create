@@ -5,9 +5,10 @@ echo "[1/2] Сборка и запуск контейнеров (Веб-серв
 # Запускаем docker-compose. Флаг -d означает запуск в фоне.
 docker-compose up --build -d
 
-echo "[2/2] Скачивание модели orcarouter/Qwen3.8-27B-Uncensored..."
+echo "[2/2] Скачивание моделей (Qwen 27B и Nomic-Embed-Text)..."
 echo "Это может занять значительное время в зависимости от скорости интернета."
 docker exec spark-dossier-ollama ollama pull orcarouter/Qwen3.8-27B-Uncensored
+docker exec spark-dossier-ollama ollama pull nomic-embed-text
 
 echo ""
 echo "=== ВСЁ УСПЕШНО ЗАПУЩЕНО! ==="

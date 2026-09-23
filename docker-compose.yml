@@ -46,5 +46,15 @@ services:
     depends_on:
       - web-app
 
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: spark-dossier-qdrant
+    restart: unless-stopped
+    expose:
+      - "6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
 volumes:
   ollama_data:
+  qdrant_data:

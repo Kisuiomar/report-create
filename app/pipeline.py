@@ -136,6 +136,36 @@ class DossierPipeline:
         else:
             dossier = await self.llm_client.generate_dossier(cleaned_text)
 
+        # RAG ENRICHMENT (Обогащение досье из истории)
+        yield {"type": "status", "message": "Индексация и поиск связей в глобальном архиве Qdrant...", "progress": 45}
+        try:
+            from app.core.vector_store import VectorKnowledgeBase
+            vkb = VectorKnowledgeBase()
+            
+            # 1. Сохраняем текущий документ в базу знаний навсегда
+            file_names = ", ".join([d.file_name for d in parsed_docs])
+            await vkb.index_document(cleaned_text, source_name=file_names)
+            
+            # 2. Ищем исторические упоминания по субъекту
+            subject_name = dossier.subject.full_name or ""
+            subject_iin = dossier.subject.iin or ""
+            query = f"{subject_name} {subject_iin}".strip()
+            
+            if query and "Неизвестный субъект" not in query:
+                historical_context = await vkb.search(query, limit=6)
+                
+                if historical_context:
+                    yield {"type": "status", "message": f"Найдены исторические данные по '{subject_name}' в архиве. Обогащаем досье...", "progress": 48}
+                    enrich_prompt = (
+                        f"Вот текущее досье, извлеченное из нового документа:\n{dossier.model_dump_json(exclude_unset=True)}\n\n"
+                        f"А вот данные об этом человеке из ПРОШЛЫХ архивных документов (Глобальная база знаний):\n{historical_context}\n\n"
+                        f"Пожалуйста, обнови досье. Если в архиве есть новые родственники, новые адреса, места работы или телефоны — ДОБАВЬ их к существующим. "
+                        f"Верни обновленный валидный JSON."
+                    )
+                    dossier = await self.llm_client.generate_dossier(enrich_prompt)
+        except Exception as e:
+            logger.error("RAG Enrichment failed: %s", e)
+
         # Добавим метаданные конвейера
         dossier.metadata.update({
             "source_files": [d.file_name for d in parsed_docs],
