@@ -14,7 +14,7 @@ from app.config import settings
 from app.core.cleaner import TextCleaner
 from app.core.llm_client import LLMClient
 from app.core.schemas import DossierReport
-from app.exporters import export_docx, export_json, export_pdf, export_xlsx
+from app.exporters import export_docx, export_json
 from app.parsers import ParsedDocument, get_parser_for_file
 
 logger = logging.getLogger(__name__)
@@ -62,7 +62,7 @@ class DossierPipeline:
         4. Валидация и экспорт отчетов (PDF, DOCX, XLSX, JSON).
         """
         start_time = time.time()
-        export_formats = export_formats or ["json", "docx", "xlsx", "pdf"]
+        export_formats = export_formats or ["json", "docx"]
 
         yield {"type": "status", "message": "Запуск пайплайна: парсинг файлов...", "progress": 5}
 
@@ -72,19 +72,26 @@ class DossierPipeline:
         raw_text_chunks: List[str] = []
 
         logger.info("Starting processing for %d files...", len(paths))
-        for p in paths:
+
+        def _parse_file(p: Path) -> Optional[ParsedDocument]:
             if not p.exists():
                 logger.warning("File not found: %s", p)
-                continue
-
+                return None
             parser = get_parser_for_file(p)
             logger.info("Parsing file '%s' with parser %s", p.name, parser.__class__.__name__)
             try:
-                doc = parser.parse(p)
-                parsed_docs.append(doc)
-                raw_text_chunks.append(f"=== [ДОКУМЕНТ: {doc.file_name} | Тип: {doc.source_type}] ===\n{doc.full_text}")
+                return parser.parse(p)
             except Exception as exc:
                 logger.error("Failed to parse %s: %s", p.name, exc, exc_info=True)
+                return None
+
+        parse_tasks = [asyncio.to_thread(_parse_file, p) for p in paths]
+        parse_results = await asyncio.gather(*parse_tasks)
+
+        for doc in parse_results:
+            if doc:
+                parsed_docs.append(doc)
+                raw_text_chunks.append(f"=== [ДОКУМЕНТ: {doc.file_name} | Тип: {doc.source_type}] ===\n{doc.full_text}")
 
         if not parsed_docs:
             raise ValueError("No valid documents were successfully parsed.")
@@ -108,19 +115,32 @@ class DossierPipeline:
         import uuid
         session_id = str(uuid.uuid4())
         
-        yield {"type": "status", "message": "Индексация всего документа в Qdrant...", "progress": 30}
-        from app.core.vector_store import VectorKnowledgeBase
+        # --- NEW: DYNAMIC RAG BYPASS ---
+        # Если текст небольшой (до 8000 токенов), отключаем RAG для ускорения
+        use_rag = estimated_tokens > 8000
+
         from app.core.graph_store import GraphKnowledgeBase
-        vkb = VectorKnowledgeBase()
         gkb = GraphKnowledgeBase()
         
-        file_names = ", ".join([d.file_name for d in parsed_docs])
-        await vkb.index_document(cleaned_text, source_name=file_names, session_id=session_id)
+        if use_rag:
+            yield {"type": "status", "message": "Индексация всего документа в Qdrant...", "progress": 30}
+            from app.core.vector_store import VectorKnowledgeBase
+            vkb = VectorKnowledgeBase()
+            file_names = ", ".join([d.file_name for d in parsed_docs])
+            await vkb.index_document(cleaned_text, source_name=file_names, session_id=session_id)
+        else:
+            yield {"type": "status", "message": "Текст небольшой. Запуск без векторного индекса (Direct LLM)...", "progress": 30}
+            vkb = None
         
-        # 4. Пошаговый RAG конвейер
-        yield {"type": "status", "message": "RAG Шаг 1: Идентификация главного субъекта...", "progress": 40}
+        # 4. Пошаговый конвейер
+        yield {"type": "status", "message": "Шаг 1: Идентификация главного субъекта...", "progress": 40}
         
-        q_subject = await vkb.search("Главный субъект документа, ФИО, ИИН, ИНН, дата рождения, паспорт, кто этот человек?", limit=5, session_id=session_id)
+        if use_rag:
+            q_subject = await vkb.search("Главный субъект документа, ФИО, ИИН, ИНН, дата рождения, паспорт, кто этот человек?", limit=5, session_id=session_id)
+        else:
+            # Берем первые 3000 символов, обычно там есть суть о главном лице
+            q_subject = cleaned_text[:3000]
+
         prompt_1 = f"Извлеки базовые данные о главном лице документа из этих фрагментов. Игнорируй остальных людей пока.\n\nФрагменты:\n{q_subject}"
         dossier_step1 = await self.llm_client.generate_dossier(prompt_1)
         
@@ -133,10 +153,13 @@ class DossierPipeline:
             yield {"type": "status", "message": "Найдены исторические данные в графе. Применяем cross-referencing...", "progress": 45}
             logger.info("Found historical context for %s", subject_name)
         
-        yield {"type": "status", "message": f"RAG Шаги 2 и 3: Параллельный поиск связей, родственников, адресов и работы ({subject_name})...", "progress": 55}
+        yield {"type": "status", "message": f"Шаги 2 и 3: Параллельный поиск связей, родственников, адресов и работы ({subject_name})...", "progress": 55}
         
         async def fetch_step2():
-            q_relatives = await vkb.search(f"Родственники, мать, отец, супруг, жена, муж, дети, братья, сестры, учредители, компании связанные с {subject_name}", limit=10, session_id=session_id)
+            if use_rag:
+                q_relatives = await vkb.search(f"Родственники, мать, отец, супруг, жена, муж, дети, братья, сестры, учредители, компании связанные с {subject_name}", limit=10, session_id=session_id)
+            else:
+                q_relatives = cleaned_text
             prompt_2 = (
                 f"Текущее базовое досье:\n{dossier_step1.model_dump_json(exclude_unset=True)}\n\n"
                 f"{historical_context}\n\n"
@@ -146,7 +169,10 @@ class DossierPipeline:
             return await self.llm_client.generate_dossier(prompt_2)
 
         async def fetch_step3():
-            q_addr = await vkb.search(f"Место работы, должность, компания, увольнение, адрес проживания, прописка, недвижимость {subject_name}", limit=10, session_id=session_id)
+            if use_rag:
+                q_addr = await vkb.search(f"Место работы, должность, компания, увольнение, адрес проживания, прописка, недвижимость {subject_name}", limit=10, session_id=session_id)
+            else:
+                q_addr = cleaned_text
             prompt_3 = (
                 f"Текущее досье:\n{dossier_step1.model_dump_json(exclude_unset=True)}\n\n"
                 f"{historical_context}\n\n"
@@ -172,16 +198,10 @@ class DossierPipeline:
             "estimated_input_tokens": estimated_tokens,
         })
 
-        # 3.5 Генерация детального Markdown отчета через LLM
-        logger.info("Generating detailed Markdown Report via LLM...")
-        dossier_json = dossier.model_dump_json(indent=2)
-        markdown_report = ""
-        
-        async for chunk in self.llm_client.generate_markdown_report(dossier_json, cleaned_text):
-            if chunk["type"] == "status":
-                yield chunk
-            elif chunk["type"] == "result":
-                markdown_report = chunk["data"]
+        # 3.5 Генерация детального Markdown отчета (быстрая статическая)
+        logger.info("Generating detailed Markdown Report via static template...")
+        yield {"type": "status", "message": "Генерация Markdown отчета (статически)...", "progress": 85}
+        markdown_report = self._generate_static_markdown(dossier)
 
 
         # 4. Формирование базового имени для экспорта
@@ -191,25 +211,30 @@ class DossierPipeline:
 
         # 5. Экспорт отчетов
         generated_files: Dict[str, Path] = {}
-        for fmt in export_formats:
+        
+        def _export_single_format(fmt: str):
             fmt_lower = fmt.lower().strip()
             out_file = self.output_dir / f"{base_name}.{fmt_lower}"
             try:
                 if fmt_lower == "json":
                     export_json(dossier, out_file)
-                    generated_files["json"] = out_file
                 elif fmt_lower == "docx":
                     export_docx(markdown_report, out_file)
-                    generated_files["docx"] = out_file
-                elif fmt_lower == "xlsx":
-                    export_xlsx(dossier, out_file)
-                    generated_files["xlsx"] = out_file
-                elif fmt_lower == "pdf":
-                    export_pdf(dossier, out_file)
-                    generated_files["pdf"] = out_file
+                else:
+                    return None
                 logger.info("Successfully exported report: %s", out_file)
+                return fmt_lower, out_file
             except Exception as exp_err:
                 logger.error("Failed to export format '%s': %s", fmt_lower, exp_err, exc_info=True)
+                return None
+
+        yield {"type": "status", "message": "Параллельный экспорт отчетов...", "progress": 95}
+        export_tasks = [asyncio.to_thread(_export_single_format, fmt) for fmt in export_formats]
+        export_results = await asyncio.gather(*export_tasks)
+        
+        for res in export_results:
+            if res:
+                generated_files[res[0]] = res[1]
 
         elapsed = time.time() - start_time
         stats = {

@@ -39,14 +39,28 @@ class VectorKnowledgeBase:
         except Exception as e:
             logger.error(f"Failed to ensure Qdrant collection: {e}")
 
-    async def _get_embeddings(self, texts: List[str]) -> List[List[float]]:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+    async def _get_embeddings(self, texts: List[str], batch_size: int = 32) -> List[List[float]]:
+        async def fetch_batch(client, batch):
             resp = await client.post(
                 f"{self.ollama_url}/api/embed",
-                json={"model": self.embed_model, "input": texts}
+                json={"model": self.embed_model, "input": batch}
             )
             resp.raise_for_status()
             return resp.json().get("embeddings", [])
+
+        all_embeddings = []
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            import asyncio
+            tasks = []
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i:i + batch_size]
+                tasks.append(fetch_batch(client, batch))
+            
+            results = await asyncio.gather(*tasks)
+            for res in results:
+                all_embeddings.extend(res)
+                
+        return all_embeddings
 
     def _chunk_text(self, text: str, chunk_size: int = 1500) -> List[str]:
         paragraphs = text.split('\n\n')
